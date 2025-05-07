@@ -1,0 +1,417 @@
+---
+title: "Inequality headlines S1"
+author: "Bence Bago"
+date: "2025-04-14"
+output: html_document
+---
+
+```{r package, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+library(tidyverse)
+library(lmerTest)
+library(ggplot2)
+library(tidyr)
+library(ggplot2)
+library(httr)
+library(readxl)
+library(purrr)
+library(dplyr)
+library(tidytext)
+library(textdata)
+library(moments)
+library(tinytex)
+library(knitr)
+library(htmltools)
+library(sjPlot)
+library(jsonlite)
+library(dplyr)
+library(gridExtra)
+library(kableExtra)
+```
+
+
+```{r management, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+column_names <- names(read.csv("inequality_headlines_S1_April 14, 2025_02.52.csv", nrows = 1))
+
+#downloaded Qualtrics file
+df <- read.csv("inequality_headlines_S1_April 14, 2025_02.52.csv", sep=",", header = FALSE, skip=86)
+names(df) <- column_names
+
+df <- df %>%
+  mutate(Ideology_econ_num = case_when(
+    Ideology_econ == "Very liberal" ~ -2,
+    Ideology_econ == "Liberal" ~ -1,
+    Ideology_econ == "Moderate" ~ 0,
+    Ideology_econ == "Conservative" ~ 1,
+    Ideology_econ == "Very conservative" ~ 2,
+    Ideology_econ == "Not sure" ~ NA,
+    TRUE ~ NA_real_
+  ))
+
+
+df <- df %>%
+  mutate(Ideology_soc_num = case_when(
+    Ideology_social == "Very liberal" ~ -2,
+    Ideology_social == "Liberal" ~ -1,
+    Ideology_social == "Moderate" ~ 0,
+    Ideology_social == "Conservative" ~ 1,
+    Ideology_social == "Very conservative" ~ 2,
+    Ideology_social == "Not sure" ~ NA,
+    TRUE ~ NA_real_
+  ))
+
+df <- df %>%
+  mutate(DemRep_C_num = case_when(
+    DemRep_C == "Strongly Democratic" ~ -3,
+    DemRep_C == "Democratic" ~ -2,
+    DemRep_C == "Lean Democratic" ~ -1,
+    DemRep_C == "Lean Republican" ~ 1,
+    DemRep_C == "Republican" ~ 2,
+    DemRep_C == "Strongly Republican" ~ 3,
+    TRUE ~ NA_real_
+  ))
+
+df <- df %>%
+  mutate(income_num = case_when(
+    income== "Less than $25,000" ~ 1,
+    income == "$25,000-$49,999" ~ 2,
+    income == "$50,000-$74,999" ~ 3,
+    income == "$75,000-$99,999" ~ 4,
+    income == "$100,000-$149,999" ~ 5,
+    income == "150,000 or more" ~ 6,
+    income == 'Prefer not to say' ~ NA,
+    TRUE ~ NA_real_
+  ))
+
+df <- df %>%
+  mutate(ideology = (Ideology_soc_num+ Ideology_econ_num) /2)
+
+# Extract relevant columns
+ratings_columns <- grep("^Rating", colnames(df), value = TRUE)
+statement_columns <- grep("^statementText", colnames(df), value = TRUE)
+prolific_id_column <- "porlific"
+
+# Function to parse JSON ratings
+parse_ratings <- function(rating_str) {
+  if (is.na(rating_str) || rating_str == "") return(NULL)
+  rating <- tryCatch(fromJSON(gsub('""', '"', gsub('""', '"', rating_str))), error = function(e) NULL)
+  return(rating)
+}
+
+
+# Flatten the ratings columns
+ratings_data <- df %>%
+  select(all_of(ratings_columns)) %>%
+  mutate(across(everything(), ~ map(.x, parse_ratings)))
+
+# Convert to long format
+long_format_data <- list()
+for (i in 1:nrow(df)) {
+  prolific_id <- df[i, prolific_id_column]
+  for (j in 1:length(statement_columns)) {
+    statement_text <- df[i, statement_columns[j]]
+    rating <- ratings_data[[ratings_columns[j]]][[i]]
+    
+    if (!is.null(rating)) {
+      # Filter out extra fields only for Rating20
+      if (ratings_columns[j] == "Rating20") {
+        rating <- rating[c("clicked", "share", "agreement")]
+      }
+      
+      long_format_data[[length(long_format_data) + 1]] <- tibble(
+        statementText = statement_text,
+        ProlificID = prolific_id,
+        click_rating = as.numeric(rating$clicked),
+        share_rating = as.numeric(rating$share),
+        agreement_rating = as.numeric(rating$agreement)
+      )
+    }
+  }
+}
+
+# Combine the list of tibbles into a single dataframe
+long_format_df <- bind_rows(long_format_data)
+
+additional_columns <- c("Educational.Level", "DemRep_C_num", "Ideology_econ_num", "Ideology_soc_num", 'ideology', "AttentionCheck2", "income_num", "gender", 'Household', 'AttentionCheck2', 'top25pre', 'bottom25pre', 'lower25pre', 'upper25pre', 'top25post', 'bottom25post', 'lower25post', 'upper25post', 'inequality_subj_1', 'inequality_pol_1', 'inequality_luck_1_1', 'inequality_subj_2', 'inequality_pol_2', 'inequality_luck_2_1')
+
+additional_info_df <- df %>%
+  select(all_of(prolific_id_column), all_of(additional_columns)) %>%
+  distinct() %>%
+  rename(ProlificID = all_of(prolific_id_column))
+
+# Merge based on ProlificID
+final_df <- long_format_df %>%
+  left_join(additional_info_df, by = "ProlificID")
+
+
+###othertable
+# Initialize list to store new rows
+prediction_data <- list()
+
+for (i in 1:nrow(df)) {
+  prolific_id <- df[i, prolific_id_column]
+  selected_value <- df$selectedValue[i]
+  actual_share <- df$actualShare[i]
+  actual_agreement <- df$actualAgreement[i]
+  
+  # Find the index of the selected statement
+  match_index <- which(df[i, statement_columns] == selected_value)
+  
+  if (length(match_index) == 1) {
+    rating_column <- ratings_columns[match_index]
+    raw_rating <- df[i, rating_column]
+    
+    parsed_rating <- tryCatch(
+      fromJSON(gsub('""', '"', raw_rating)),
+      error = function(e) NULL
+    )
+    
+    # Special case for Rating20
+    if (!is.null(parsed_rating)) {
+      if (rating_column == "Rating20") {
+        parsed_rating <- parsed_rating[c("clicked", "share", "agreement")]
+      }
+      
+      predicted_share <- as.numeric(parsed_rating$share)
+      predicted_agreement <- as.numeric(parsed_rating$agreement)
+    } else {
+      predicted_share <- NA
+      predicted_agreement <- NA
+    }
+    
+    prediction_data[[length(prediction_data) + 1]] <- tibble(
+      ProlificID = prolific_id,
+      selectedValue = selected_value,
+      actualShare = actual_share,
+      actualAgreement = actual_agreement,
+      predictedShare = predicted_share,
+      predictedAgreement = predicted_agreement
+    )
+  }
+}
+
+# Combine into one dataframe
+prediction_df <- bind_rows(prediction_data)
+
+json_url <- "https://raw.githubusercontent.com/bencebago/inequality_headlines/refs/heads/main/modified_titles_factchecked_experiment.json"
+
+# Read JSON
+json_data <- fromJSON(json_url)
+
+# Convert to dataframe if needed
+json_df <- as.data.frame(json_data)
+
+
+lookup_df <- json_df %>%
+  select(item_nr, original, flipped) %>%
+  pivot_longer(cols = c(original, flipped), 
+               names_to = "condition", 
+               values_to = "text")
+
+
+# Add condition and item_nr to long_format_df
+final_df <- final_df %>%
+  left_join(lookup_df, by = c("statementText" = "text"))
+
+# Add condition and item_nr to prediction_df
+prediction_df <- prediction_df %>%
+  left_join(lookup_df, by = c("selectedValue" = "text"))
+
+
+
+
+additional_info_df <- df %>%
+  select(all_of(prolific_id_column), all_of(additional_columns)) %>%
+  distinct() %>%
+  rename(ProlificID = all_of(prolific_id_column))
+
+# Merge into prediction_df
+prediction_df <- prediction_df %>%
+  left_join(additional_info_df, by = "ProlificID")
+
+```
+
+## Prediction errors by condition, by economic ideology
+
+
+```{r prediction error analysis}
+
+clicks_df <- long_format_df %>%
+  select(ProlificID, statementText, click_rating) %>%
+  rename(selectedValue = statementText)
+
+# Merge click_rating into prediction_df
+prediction_df <- prediction_df %>%
+  left_join(clicks_df, by = c("ProlificID", "selectedValue"))
+
+
+
+prediction_df <- prediction_df %>%
+  mutate(
+    diff_share = predictedShare - actualShare,
+    diff_agree = predictedAgreement - actualAgreement
+  )
+
+ggplot(prediction_df, aes(x = ideology, y = diff_share, color = condition)) +
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE) +
+  labs(
+    x = "Ideology",
+    y = "Predicted - Actual Share",
+    color = "Condition",
+    title = "Prediction Error (Sharing) by Ideology"
+  ) +
+  theme_minimal()
+
+
+
+ggplot(prediction_df, aes(x = ideology, y = diff_agree, color = condition)) +
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE) +
+  labs(
+    x = " Ideology ",
+    y = "Predicted - Actual Agreement",
+    color = "Condition",
+    title = "Prediction Error Agreement by Ideology"
+  ) +
+  theme_minimal()
+
+model1 = lmer(scale(diff_agree) ~ condition*ideology  + (condition*ideology|item_nr), prediction_df, na.action=na.omit)
+summary(model1)
+
+
+model1 = lmer(scale(diff_agree) ~ condition*DemRep_C_num  + (condition*DemRep_C_num|item_nr), prediction_df, na.action=na.omit)
+summary(model1)
+
+#likelihood to click,share,agree
+
+
+ggplot(final_df, aes(x = inequality_subj_1, y = agreement_rating, color = condition)) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    title = "Agreement Rating by  Ideology",
+    x = "Ideology High means more conservative",
+    y = "Agreement Rating",
+    color = "Condition"
+  ) +
+  theme_minimal()
+
+ggplot(final_df, aes(x = inequality_subj_1, y = click_rating, color = condition)) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    title = "Agreement Rating by  Ideology",
+    x = "Ideology High means more conservative",
+    y = "Click Rating",
+    color = "Condition"
+  ) +
+  theme_minimal()
+
+ggplot(final_df, aes(x = ideology, y = share_rating, color = condition)) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    title = "Agreement Rating by  Ideology",
+    x = "Ideology High means more conservative",
+    y = "ShareRating",
+    color = "Condition"
+  ) +
+  theme_minimal()
+
+
+
+
+
+```
+
+
+```{r information avoidance + targeting, echo=FALSE}
+
+
+# I need to know for which articles it worked, for which it is not, and if there are linguistic correlates of working change.
+
+model1 = lmer(scale(agreement_rating) ~ condition*scale(inequality_subj_1)+ (condition|ProlificID) + (condition|item_nr), data=final_df, na.action=na.omit)
+summary(model1)
+
+model1 = lmer(scale(click_rating) ~ condition*scale(inequality_pol_1)+ (condition|ProlificID) + (condition|item_nr), data=final_df, na.action=na.omit)
+summary(model1)
+
+model1 = lmer(scale(share_rating) ~ condition*scale(inequality_pol_1)+ (condition|ProlificID) + (condition|item_nr), data=final_df, na.action=na.omit)
+summary(model1)
+
+
+model1 = lmer(scale(click_rating) ~ condition*ideology + (1|ProlificID) + (condition*ideology|item_nr), data=final_df, na.action=na.omit)
+summary(model1)
+
+model1 = lmer(scale(share_rating) ~ condition*ideology + (1|ProlificID) + (condition*ideology|item_nr), data=final_df, na.action=na.omit)
+summary(model1)
+
+
+model1 = lmer(scale(agreement_rating) ~ condition*DemRep_C_num + (1|ProlificID) + (condition*DemRep_C_num|item_nr), data=final_df, na.action=na.omit)
+summary(model1)
+
+model1 = lmer(scale(click_rating) ~ condition*DemRep_C_num + (1|ProlificID) + (condition*DemRep_C_num|item_nr), data=final_df, na.action=na.omit)
+summary(model1)
+
+model1 = lmer(scale(share_rating) ~ condition*DemRep_C_num + (1|ProlificID) + (condition*DemRep_C_num|item_nr), data=final_df, na.action=na.omit)
+summary(model1)
+
+model1 = lmer(scale(agreement_rating) ~ condition*income_num + (1|ProlificID) + (condition*income_num|item_nr), data=final_df, na.action=na.omit)
+summary(model1)
+
+model1 = lmer(scale(click_rating) ~ condition*income_num + (1|ProlificID) + (condition*income_num|item_nr), data=final_df, na.action=na.omit)
+summary(model1)
+
+model1 = lmer(scale(share_rating) ~ condition*income_num + (1|ProlificID) + (condition*income_num|item_nr), data=final_df, na.action=na.omit)
+summary(model1)
+
+
+
+
+#figure on by item
+
+
+filtered_data <- final_df %>%
+  filter(scale(inequality_subj_1) < 0)
+
+# Compute click rate per item and condition
+item_effects <- filtered_data %>%
+  group_by(item_nr, condition) %>%
+  summarise(click_rate = mean(click_rating, na.rm = TRUE), .groups = 'drop') %>%
+  tidyr::pivot_wider(names_from = condition, values_from = click_rate, names_prefix = "cond_") %>%
+  mutate(treatment_effect = cond_flipped - cond_original)
+
+# Plot histogram of treatment effects
+ggplot(item_effects, aes(x = treatment_effect)) +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribution of Treatment Effects by Headline (Conservatives Only)",
+    x = "Treatment Effect (Click Rate Difference)",
+    y = "Number of Headlines"
+  ) +
+  theme_minimal()
+
+
+
+
+
+```
+
+
+```{r belief change, echo=FALSE}
+
+
+t.test(prediction_df$inequality_subj_1,  prediction_df$inequality_subj_2, paired=T) #nothing
+hist(prediction_df$inequality_subj_1)
+
+mean(prediction_df$inequality_pol_1, na.rm=T)
+t.test(prediction_df$inequality_pol_1,  prediction_df$inequality_pol_2, paired=T)# increase supporting policy
+hist(prediction_df$inequality_pol_1)
+
+t.test(prediction_df$inequality_luck_1_1,  prediction_df$inequality_luck_2_1, paired=T)#small increase toward luck matters
+hist(prediction_df$inequality_luck_1_1)
+hist(prediction_df$inequality_luck_2_1)
+t.test(prediction_df$top25pre,  prediction_df$top25post, paired=T) #significant increase
+t.test(prediction_df$upper25pre,  prediction_df$upper25post, paired=T) #significant decrease
+t.test(prediction_df$lower25pre,  prediction_df$lower25post, paired=T) #slight decrease
+t.test(prediction_df$bottom25pre,  prediction_df$bottom25post, paired=T) #no change
+
+
+
+
+```
