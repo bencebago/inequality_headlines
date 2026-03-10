@@ -1,0 +1,1031 @@
+---
+title: "Supplementary Information"
+author: "Bence Bago & Christoph Kogler"
+output: html_document
+---
+
+```{r package, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+library(tidyverse)
+library(lmerTest)
+library(ggplot2)
+library(tidyr)
+library(ggplot2)
+library(httr)
+library(readxl)
+library(purrr)
+library(dplyr)
+library(tidytext)
+library(textdata)
+library(moments)
+library(tinytex)
+library(knitr)
+library(htmltools)
+library(sjPlot)
+library(jsonlite)
+library(dplyr)
+library(gridExtra)
+library(kableExtra)
+```
+
+
+```{r management STUDY 1, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+# Load pre-processed Study 1 data (PII removed; all numeric recodes already applied)
+final_df      <- read.csv("study1_long_processed.csv",        stringsAsFactors = FALSE)
+prediction_df <- read.csv("study1_predictions_processed.csv", stringsAsFactors = FALSE)
+```
+
+
+```{r management STUDY 2, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+
+# Load required libraries
+library(tidyverse)
+library(jsonlite)
+
+# ============================================================================
+# STEP 1: Read pre-processed Study 2 data (PII removed; recodes already applied)
+# ============================================================================
+data <- read.csv("study2_participant_processed.csv", stringsAsFactors = FALSE)
+
+# ============================================================================
+# STEP 2: Row numbers already present in processed file; ensure numeric
+# ============================================================================
+data$original_row <- as.integer(data$original_row)
+
+# ============================================================================
+# STEP 3: Transform to long format for title and vote variables
+# ============================================================================
+statement_cols <- grep("^title\\d+$", names(data), value = TRUE)
+vote_cols      <- grep("^vote\\d+$",  names(data), value = TRUE)
+
+data_long <- data %>%
+  pivot_longer(
+    cols = all_of(c(statement_cols, vote_cols)),
+    names_to = c(".value", "statement_number"),
+    names_pattern = "(title|vote)(\\d+)"
+  ) %>%
+  filter(!is.na(title) & title != "")
+
+# ============================================================================
+# STEP 4: Load JSON from local file
+# ============================================================================
+json_data <- fromJSON("cleaned_articles_with_headlines_unfiltered.json", simplifyDataFrame = FALSE)
+
+# ============================================================================
+# STEP 5: Function to find title in JSON entries
+# ============================================================================
+find_text_in_json <- function(text, json_data) {
+  if (is.na(text) || text == "") {
+    return(data.frame(json_index = NA, found_in_field = NA))
+  }
+  
+  # Search through all JSON entries
+  for (i in seq_along(json_data)) {
+    entry <- json_data[[i]]
+    
+    # Check in title field
+    if (!is.null(entry$title) && !is.na(entry$title) && length(entry$title) > 0) {
+      if (grepl(text, entry$title, fixed = TRUE)) {
+        return(data.frame(json_index = i, found_in_field = "title"))
+      }
+    }
+    
+    # Check in selected_title field
+    if (!is.null(entry$selected_title) && !is.na(entry$selected_title) && length(entry$selected_title) > 0) {
+      if (grepl(text, entry$selected_title, fixed = TRUE)) {
+        return(data.frame(json_index = i, found_in_field = "selected_title"))
+      }
+    }
+  }
+  
+  # Not found
+  return(data.frame(json_index = NA, found_in_field = NA))
+}
+
+# ============================================================================
+# STEP 6: Apply the function to find matches for title
+# ============================================================================
+cat("Searching for title matches in JSON...\n")
+data_long <- data_long %>%
+  rowwise() %>%
+  mutate(
+    match_result = list(find_text_in_json(title, json_data))
+  ) %>%
+  ungroup() %>%
+  unnest(match_result)
+
+# ============================================================================
+# STEP 7: Check if selectedValue is found in title or selected_title
+# ============================================================================
+if ("selectedTitle" %in% names(data_long)) {
+  cat("Searching for selectedValue matches in JSON...\n")
+  
+  find_selectedValue_in_json <- function(text, json_data) {
+    if (is.na(text) || text == "") {
+      return(data.frame(json_index_selectedValue = NA, selectedValue_found_in = "NA"))
+    }
+    
+    for (i in seq_along(json_data)) {
+      entry <- json_data[[i]]
+      
+      # Check in title
+      if (!is.null(entry$title) && !is.na(entry$title) && length(entry$title) > 0) {
+        if (grepl(text, entry$title, fixed = TRUE)) {
+          return(data.frame(json_index_selectedValue = i, selectedValue_found_in = "title"))
+        }
+      }
+      
+      # Check in selected_title
+      if (!is.null(entry$selected_title) && !is.na(entry$selected_title) && length(entry$selected_title) > 0) {
+        if (grepl(text, entry$selected_title, fixed = TRUE)) {
+          return(data.frame(json_index_selectedValue = i, selectedValue_found_in = "selected_title"))
+        }
+      }
+    }
+    
+    return(data.frame(json_index_selectedValue = NA, selectedValue_found_in = "none"))
+  }
+  
+  data_long <- data_long %>%
+    rowwise() %>%
+    mutate(
+      selected_match_result = list(find_selectedValue_in_json(selectedTitle, json_data))
+    ) %>%
+    ungroup() %>%
+    unnest(selected_match_result)
+}
+
+
+selected_match_summary <- data_long %>%
+  select(original_row, json_index_selectedValue, selectedValue_found_in) %>%
+  distinct(original_row, .keep_all = TRUE)  # one row per respondent
+
+data <- data %>%
+  left_join(selected_match_summary, by = "original_row")
+
+# ============================================================================
+# STEP 8: Prepare analysis datasets
+# ============================================================================
+
+# --- Engagement long-format ---
+data_long_vote = data_long %>%
+  mutate(inequality_subj_1 = as.numeric(inequality_subj_1),
+         inequality_subj_2 = as.numeric(inequality_subj_2),
+         inequality_pol_1 = as.numeric(inequality_pol_1),
+         inequality_pol_2 = as.numeric(inequality_pol_2),
+         inequality_luck_1_1 = as.numeric(inequality_luck_1_1),
+         inequality_luck_2_1 = as.numeric(inequality_luck_2_1),
+         inequality_pol_sp1_1 = as.numeric(inequality_pol_sp1_1),
+         inequality_pol_sp2_1 = as.numeric(inequality_pol_sp2_1),
+         inequality_pol_sp2_2 = as.numeric(inequality_pol_sp2_2),
+         inequality_pol_sp1_2 = as.numeric(inequality_pol_sp1_2),
+         vote = ifelse(vote == 'upvote', 1, 0),
+         inequality_subjective = (inequality_subj_1 - 4)/3,
+         inequality_politics = (inequality_pol_1 - 4)/3,
+         DemRep_C_num = as.numeric(DemRep_C_num),
+         income_num = as.numeric(income_num)) %>%
+  filter(found_in_field == 'title' | found_in_field == 'selected_title') %>%
+  mutate(conditionstat = ifelse(condition == 'personal', 1, 0))
+
+# --- Experience dataset ---
+data$credibility_1 = as.numeric(data$credibility_1)
+data$inequality_subj_1 = as.numeric(data$inequality_subj_1)
+data$inequality_pol_1 = as.numeric(data$inequality_pol_1)
+data$DemRep_C_num = as.numeric(data$DemRep_C_num)
+data$income_num = as.numeric(data$income_num)
+
+datacredibility = data %>%
+  filter(selectedTitleSource == '1')
+
+# --- Belief updating dataset ---
+data_belief <- data %>%
+  filter(articleDisplayStatus == 'found') %>%
+  mutate(
+    inequality_subj_1 = as.numeric(inequality_subj_1),
+    inequality_subj_2 = as.numeric(inequality_subj_2),
+    inequality_pol_1 = as.numeric(inequality_pol_1),
+    inequality_pol_2 = as.numeric(inequality_pol_2),
+    inequality_luck_1_1 = as.numeric(inequality_luck_1_1),
+    inequality_luck_2_1 = as.numeric(inequality_luck_2_1),
+    inequality_pol_sp1_1 = as.numeric(inequality_pol_sp1_1),
+    inequality_pol_sp2_1 = as.numeric(inequality_pol_sp2_1),
+    inequality_pol_sp1_2 = as.numeric(inequality_pol_sp1_2),
+    inequality_pol_sp2_2 = as.numeric(inequality_pol_sp2_2),
+    inequality_subjective_1 = (inequality_subj_1 - 4)/3,
+    inequality_subjective_2 = (inequality_subj_2 - 4)/3,
+    inequality_politics_1 = (inequality_pol_1 - 4)/3,
+    inequality_politics_2 = (inequality_pol_2 - 4)/3,
+    inequality_luck_1 = (inequality_luck_1_1 - 4)/3,
+    inequality_luck_2 = (inequality_luck_2_1 - 4)/3,
+    belief_update_subjective = inequality_subjective_2 - inequality_subjective_1,
+    belief_update_politics = inequality_politics_2 - inequality_politics_1,
+    belief_update_luck = inequality_luck_2 - inequality_luck_1,
+    inequality_pol_sp1_1_c = (inequality_pol_sp1_1 - 4)/3,
+    inequality_pol_sp2_1_c = (inequality_pol_sp2_1 - 4)/3,
+    inequality_pol_sp1_2_c = (inequality_pol_sp1_2 - 4)/3,
+    inequality_pol_sp2_2_c = (inequality_pol_sp2_2 - 4)/3,
+    belief_update_pol_sp1 = inequality_pol_sp2_1_c - inequality_pol_sp1_1_c,
+    belief_update_pol_sp2 = inequality_pol_sp2_2_c - inequality_pol_sp1_2_c,
+    selectedTitleSourceStat = ifelse(selectedTitleSource == '1', 0.5, -0.5),
+    DemRep_C_num = as.numeric(DemRep_C_num),
+    income_num = as.numeric(income_num)
+  )
+
+
+```
+
+# Effect heterogeneity analysis
+
+In the following sections, we test weather income or political partisan affiliation moderates the treatment effect (that is, headline treatment interaction with prior beliefs). Table notes specify both coding and random effect structure of all variables. 
+
+## Tables: Engagement
+
+```{r engagement tables, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+cat('<style>table { width: 100% !important; font-size: 11px; } </style>\n')
+
+lbl_base <- c("Intercept","Prior belief","Headline condition","Prior belief \u00d7 Headline condition")
+lbl_dem  <- c("Intercept","Prior belief","Headline condition","Partisanship",
+              "Prior belief \u00d7 Headline condition","Prior belief \u00d7 Partisanship",
+              "Headline condition \u00d7 Partisanship",
+              "Prior belief \u00d7 Headline condition \u00d7 Partisanship")
+lbl_inc  <- c("Intercept","Prior belief","Headline condition","Income",
+              "Prior belief \u00d7 Headline condition","Prior belief \u00d7 Income",
+              "Headline condition \u00d7 Income",
+              "Prior belief \u00d7 Headline condition \u00d7 Income")
+dv_eng   <- c("S1 Click","S1 Share","S1 Agree","S2 Vote")
+
+# helper: build data with unified column names Prior / Cond / Mod
+mk_eng_s1 <- function(df, prior_col) {
+  df %>% mutate(Prior = as.numeric(scale(.data[[prior_col]])),
+                Cond  = ifelse(condition == "original", 0, 1))
+}
+mk_eng_s2 <- function(df, prior_col) {
+  df %>% mutate(Prior = as.numeric(scale(.data[[prior_col]])),
+                Cond  = conditionstat)
+}
+
+# ---- SUBJECTIVE PRIOR ----
+s1s <- mk_eng_s1(final_df,      "inequality_subj_1")
+s2s <- mk_eng_s2(data_long_vote, "inequality_subjective")
+
+# Base
+e_s1_cl_s <- lmer(scale(click_rating)     ~ Prior*Cond + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1s, na.action=na.omit)
+e_s1_sh_s <- lmer(scale(share_rating)     ~ Prior*Cond + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1s, na.action=na.omit)
+e_s1_ag_s <- lmer(scale(agreement_rating) ~ Prior*Cond + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1s, na.action=na.omit)
+e_s2_vt_s <- lmer(vote                   ~ Prior*Cond + (1|prolific)+(1+Prior+Cond|json_index),  data=s2s, na.action=na.omit)
+tab_model(e_s1_cl_s, e_s1_sh_s, e_s1_ag_s, e_s2_vt_s,
+  pred.labels=lbl_base, dv.labels=dv_eng, show.ci=FALSE, show.se=TRUE, show.p=TRUE,
+  digits=2, show.re.var=FALSE, show.icc=FALSE, show.ngroups=FALSE,
+  title="Table S1: Engagement — Subjective Inequality Prior (Base)")
+cat('<p style="font-size:10px;font-style:italic;">Mixed-effects regression. Outcomes: click, share, and agreement ratings (Study 1, 1\u20137 scales, standardised); upvote probability (Study 2, binary). Prior belief = subjective perception of inequality severity (scaled). Headline condition: 1 = original, 0 = AI-reframed. Study 1: random intercepts and headline condition slopes for participants and items. Study 2: random intercepts for participants; random intercepts, prior belief slopes, and headline condition slopes for items.</p>')
+
+# Partisanship
+s1sd <- s1s %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+s2sd <- s2s %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+e_s1_cl_s_dem <- lmer(scale(click_rating)     ~ Prior*Cond*Partisanship + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1sd, na.action=na.omit)
+e_s1_sh_s_dem <- lmer(scale(share_rating)     ~ Prior*Cond*Partisanship + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1sd, na.action=na.omit)
+e_s1_ag_s_dem <- lmer(scale(agreement_rating) ~ Prior*Cond*Partisanship + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1sd, na.action=na.omit)
+e_s2_vt_s_dem <- lmer(vote                   ~ Prior*Cond*Partisanship + (1|prolific)+(1+Cond|json_index),  data=s2sd, na.action=na.omit)
+tab_model(e_s1_cl_s_dem, e_s1_sh_s_dem, e_s1_ag_s_dem, e_s2_vt_s_dem,
+  pred.labels=lbl_dem, dv.labels=dv_eng, show.ci=FALSE, show.se=TRUE, show.p=TRUE,
+  digits=2, show.re.var=FALSE, show.icc=FALSE, show.ngroups=FALSE,
+  title="Table S2: Engagement — Subjective Inequality Prior \u00d7 Partisanship")
+cat('<p style="font-size:10px;font-style:italic;">Same fixed effects as Table S1 with partisanship as moderator (scaled; negative = Democratic, positive = Republican). Study 1 random effects unchanged. Study 2: random intercepts for participants; random intercepts and headline condition slopes for items (prior belief slope omitted for parsimony).</p>')
+
+# Income
+s1si <- s1s %>% mutate(Income = as.numeric(scale(income_num)))
+s2si <- s2s %>% mutate(Income = as.numeric(scale(income_num)))
+e_s1_cl_s_inc <- lmer(scale(click_rating)     ~ Prior*Cond*Income + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1si, na.action=na.omit)
+e_s1_sh_s_inc <- lmer(scale(share_rating)     ~ Prior*Cond*Income + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1si, na.action=na.omit)
+e_s1_ag_s_inc <- lmer(scale(agreement_rating) ~ Prior*Cond*Income + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1si, na.action=na.omit)
+e_s2_vt_s_inc <- lmer(vote                   ~ Prior*Cond*Income + (1|prolific)+(1+Cond|json_index),  data=s2si, na.action=na.omit)
+tab_model(e_s1_cl_s_inc, e_s1_sh_s_inc, e_s1_ag_s_inc, e_s2_vt_s_inc,
+  pred.labels=lbl_inc, dv.labels=dv_eng, show.ci=FALSE, show.se=TRUE, show.p=TRUE,
+  digits=2, show.re.var=FALSE, show.icc=FALSE, show.ngroups=FALSE,
+  title="Table S3: Engagement — Subjective Inequality Prior \u00d7 Income")
+cat('<p style="font-size:10px;font-style:italic;">Same fixed effects as Table S1 with household income as moderator (scaled; 1 = &lt;$25k to 6 = $150k+). Study 1 random effects unchanged. Study 2: random intercepts for participants; random intercepts and headline condition slopes for items (prior belief slope omitted for parsimony).</p>')
+
+# ---- POLICY PRIOR ----
+s1p <- mk_eng_s1(final_df,      "inequality_pol_1")
+s2p <- mk_eng_s2(data_long_vote, "inequality_politics")
+
+# Base
+e_s1_cl_p <- lmer(scale(click_rating)     ~ Prior*Cond + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1p, na.action=na.omit)
+e_s1_sh_p <- lmer(scale(share_rating)     ~ Prior*Cond + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1p, na.action=na.omit)
+e_s1_ag_p <- lmer(scale(agreement_rating) ~ Prior*Cond + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1p, na.action=na.omit)
+e_s2_vt_p <- lmer(vote                   ~ Prior*Cond + (1|prolific)+(1+Prior+Cond|json_index),  data=s2p, na.action=na.omit)
+tab_model(e_s1_cl_p, e_s1_sh_p, e_s1_ag_p, e_s2_vt_p,
+  pred.labels=lbl_base, dv.labels=dv_eng, show.ci=FALSE, show.se=TRUE, show.p=TRUE,
+  digits=2, show.re.var=FALSE, show.icc=FALSE, show.ngroups=FALSE,
+  title="Table S4: Engagement — Policy Support Prior (Base)")
+cat('<p style="font-size:10px;font-style:italic;">Mixed-effects regression. Same outcomes as Table S1. Prior belief = support for redistributive policy (scaled). Study 1: random intercepts and headline condition slopes for participants and items. Study 2: random intercepts for participants; random intercepts, prior belief slopes, and headline condition slopes for items.</p>')
+
+# Partisanship
+s1pd <- s1p %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+s2pd <- s2p %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+e_s1_cl_p_dem <- lmer(scale(click_rating)     ~ Prior*Cond*Partisanship + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1pd, na.action=na.omit)
+e_s1_sh_p_dem <- lmer(scale(share_rating)     ~ Prior*Cond*Partisanship + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1pd, na.action=na.omit)
+e_s1_ag_p_dem <- lmer(scale(agreement_rating) ~ Prior*Cond*Partisanship + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1pd, na.action=na.omit)
+e_s2_vt_p_dem <- lmer(vote                   ~ Prior*Cond*Partisanship + (1|prolific)+(1+Cond|json_index),  data=s2pd, na.action=na.omit)
+tab_model(e_s1_cl_p_dem, e_s1_sh_p_dem, e_s1_ag_p_dem, e_s2_vt_p_dem,
+  pred.labels=lbl_dem, dv.labels=dv_eng, show.ci=FALSE, show.se=TRUE, show.p=TRUE,
+  digits=2, show.re.var=FALSE, show.icc=FALSE, show.ngroups=FALSE,
+  title="Table S5: Engagement — Policy Support Prior \u00d7 Partisanship")
+cat('<p style="font-size:10px;font-style:italic;">Same fixed effects as Table S4 with partisanship as moderator (scaled; negative = Democratic, positive = Republican). Study 1 random effects unchanged. Study 2: random intercepts for participants; random intercepts and headline condition slopes for items (prior belief slope omitted for parsimony).</p>')
+
+# Income
+s1pi <- s1p %>% mutate(Income = as.numeric(scale(income_num)))
+s2pi <- s2p %>% mutate(Income = as.numeric(scale(income_num)))
+e_s1_cl_p_inc <- lmer(scale(click_rating)     ~ Prior*Cond*Income + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1pi, na.action=na.omit)
+e_s1_sh_p_inc <- lmer(scale(share_rating)     ~ Prior*Cond*Income + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1pi, na.action=na.omit)
+e_s1_ag_p_inc <- lmer(scale(agreement_rating) ~ Prior*Cond*Income + (1+Cond|ProlificID)+(1+Cond|item_nr), data=s1pi, na.action=na.omit)
+e_s2_vt_p_inc <- lmer(vote                   ~ Prior*Cond*Income + (1|prolific)+(1+Cond|json_index),  data=s2pi, na.action=na.omit)
+tab_model(e_s1_cl_p_inc, e_s1_sh_p_inc, e_s1_ag_p_inc, e_s2_vt_p_inc,
+  pred.labels=lbl_inc, dv.labels=dv_eng, show.ci=FALSE, show.se=TRUE, show.p=TRUE,
+  digits=2, show.re.var=FALSE, show.icc=FALSE, show.ngroups=FALSE,
+  title="Table S6: Engagement — Policy Support Prior \u00d7 Income")
+cat('<p style="font-size:10px;font-style:italic;">Same fixed effects as Table S4 with household income as moderator (scaled; 1 = &lt;$25k to 6 = $150k+). Study 1 random effects unchanged. Study 2: random intercepts for participants; random intercepts and headline condition slopes for items (prior belief slope omitted for parsimony).</p>')
+```
+
+## Tables: Experience
+
+```{r experience tables, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+prediction_df$conditionstat = ifelse(prediction_df$condition == 'original', 0, 1)
+
+lbl_base <- c("Intercept","Prior belief","Headline condition","Prior belief \u00d7 Headline condition")
+lbl_dem  <- c("Intercept","Prior belief","Headline condition","Partisanship",
+              "Prior belief \u00d7 Headline condition","Prior belief \u00d7 Partisanship",
+              "Headline condition \u00d7 Partisanship",
+              "Prior belief \u00d7 Headline condition \u00d7 Partisanship")
+lbl_inc  <- c("Intercept","Prior belief","Headline condition","Income",
+              "Prior belief \u00d7 Headline condition","Prior belief \u00d7 Income",
+              "Headline condition \u00d7 Income",
+              "Prior belief \u00d7 Headline condition \u00d7 Income")
+dv_exp <- c("S1 Act.Share","S1 Act.Agree","S2 Credibility")
+
+# helper: unified column names for experience data
+mk_exp_s1 <- function(df, prior_col) {
+  df %>% mutate(Prior = as.numeric(scale(.data[[prior_col]])),
+                Cond  = ifelse(condition == "original", 0, 1))
+}
+mk_exp_s2 <- function(df, prior_col) {
+  df %>% mutate(Prior = as.numeric(scale(.data[[prior_col]])),
+                Cond  = ifelse(condition == "personal", 1, 0))
+}
+
+# ---- SUBJECTIVE PRIOR ----
+x1s <- mk_exp_s1(prediction_df,  "inequality_subj_1")
+x2s <- mk_exp_s2(datacredibility, "inequality_subj_1")
+
+# Base
+x_s1_sh_s <- lm(scale(actualShare)     ~ Prior*Cond, data=x1s, na.action=na.omit)
+x_s1_ag_s <- lm(scale(actualAgreement) ~ Prior*Cond, data=x1s, na.action=na.omit)
+x_s2_cr_s <- lm(scale(credibility_1)   ~ Prior*Cond, data=x2s, na.action=na.omit)
+tab_model(x_s1_sh_s, x_s1_ag_s, x_s2_cr_s,
+  pred.labels=lbl_base, dv.labels=dv_exp, show.ci=FALSE, show.se=TRUE, show.p=TRUE,
+  digits=2, show.re.var=FALSE, show.icc=FALSE, show.ngroups=FALSE,
+  title="Table S7: Experience — Subjective Inequality Prior (Base)")
+cat('<p style="font-size:10px;font-style:italic;">OLS regression. Outcomes: actual share rate and agreement rate chosen by other participants (Study 1, standardised); article credibility rating (Study 2, standardised). Prior belief = subjective perception of inequality severity (scaled).</p>')
+
+# Partisanship
+x1sd <- x1s %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+x2sd <- x2s %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+x_s1_sh_s_dem <- lm(scale(actualShare)     ~ Prior*Cond*Partisanship, data=x1sd, na.action=na.omit)
+x_s1_ag_s_dem <- lm(scale(actualAgreement) ~ Prior*Cond*Partisanship, data=x1sd, na.action=na.omit)
+x_s2_cr_s_dem <- lm(scale(credibility_1)   ~ Prior*Cond*Partisanship, data=x2sd, na.action=na.omit)
+tab_model(x_s1_sh_s_dem, x_s1_ag_s_dem, x_s2_cr_s_dem,
+  pred.labels=lbl_dem, dv.labels=dv_exp, show.ci=FALSE, show.se=TRUE, show.p=TRUE,
+  digits=2, show.re.var=FALSE, show.icc=FALSE, show.ngroups=FALSE,
+  title="Table S8: Experience — Subjective Inequality Prior \u00d7 Partisanship")
+cat('<p style="font-size:10px;font-style:italic;">OLS regression. Same outcomes as Table S7. Partisanship as moderator (scaled; negative = Democratic, positive = Republican).</p>')
+
+# Income
+x1si <- x1s %>% mutate(Income = as.numeric(scale(income_num)))
+x2si <- x2s %>% mutate(Income = as.numeric(scale(income_num)))
+x_s1_sh_s_inc <- lm(scale(actualShare)     ~ Prior*Cond*Income, data=x1si, na.action=na.omit)
+x_s1_ag_s_inc <- lm(scale(actualAgreement) ~ Prior*Cond*Income, data=x1si, na.action=na.omit)
+x_s2_cr_s_inc <- lm(scale(credibility_1)   ~ Prior*Cond*Income, data=x2si, na.action=na.omit)
+tab_model(x_s1_sh_s_inc, x_s1_ag_s_inc, x_s2_cr_s_inc,
+  pred.labels=lbl_inc, dv.labels=dv_exp, show.ci=FALSE, show.se=TRUE, show.p=TRUE,
+  digits=2, show.re.var=FALSE, show.icc=FALSE, show.ngroups=FALSE,
+  title="Table S9: Experience — Subjective Inequality Prior \u00d7 Income")
+cat('<p style="font-size:10px;font-style:italic;">OLS regression. Same outcomes as Table S7. Household income as moderator (scaled; 1 = &lt;$25k to 6 = $150k+).</p>')
+
+# ---- POLICY PRIOR ----
+x1p <- mk_exp_s1(prediction_df,  "inequality_pol_1")
+x2p <- mk_exp_s2(datacredibility, "inequality_pol_1")
+
+# Base
+x_s1_sh_p <- lm(scale(actualShare)     ~ Prior*Cond, data=x1p, na.action=na.omit)
+x_s1_ag_p <- lm(scale(actualAgreement) ~ Prior*Cond, data=x1p, na.action=na.omit)
+x_s2_cr_p <- lm(scale(credibility_1)   ~ Prior*Cond, data=x2p, na.action=na.omit)
+tab_model(x_s1_sh_p, x_s1_ag_p, x_s2_cr_p,
+  pred.labels=lbl_base, dv.labels=dv_exp, show.ci=FALSE, show.se=TRUE, show.p=TRUE,
+  digits=2, show.re.var=FALSE, show.icc=FALSE, show.ngroups=FALSE,
+  title="Table S10: Experience — Policy Support Prior (Base)")
+cat('<p style="font-size:10px;font-style:italic;">OLS regression. Same outcomes as Table S7. Prior belief = support for redistributive policy (scaled).</p>')
+
+# Partisanship
+x1pd <- x1p %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+x2pd <- x2p %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+x_s1_sh_p_dem <- lm(scale(actualShare)     ~ Prior*Cond*Partisanship, data=x1pd, na.action=na.omit)
+x_s1_ag_p_dem <- lm(scale(actualAgreement) ~ Prior*Cond*Partisanship, data=x1pd, na.action=na.omit)
+x_s2_cr_p_dem <- lm(scale(credibility_1)   ~ Prior*Cond*Partisanship, data=x2pd, na.action=na.omit)
+tab_model(x_s1_sh_p_dem, x_s1_ag_p_dem, x_s2_cr_p_dem,
+  pred.labels=lbl_dem, dv.labels=dv_exp, show.ci=FALSE, show.se=TRUE, show.p=TRUE,
+  digits=2, show.re.var=FALSE, show.icc=FALSE, show.ngroups=FALSE,
+  title="Table S11: Experience — Policy Support Prior \u00d7 Partisanship")
+cat('<p style="font-size:10px;font-style:italic;">OLS regression. Same outcomes as Table S7. Prior belief = support for redistributive policy. Partisanship as moderator (scaled; negative = Democratic, positive = Republican).</p>')
+
+# Income
+x1pi <- x1p %>% mutate(Income = as.numeric(scale(income_num)))
+x2pi <- x2p %>% mutate(Income = as.numeric(scale(income_num)))
+x_s1_sh_p_inc <- lm(scale(actualShare)     ~ Prior*Cond*Income, data=x1pi, na.action=na.omit)
+x_s1_ag_p_inc <- lm(scale(actualAgreement) ~ Prior*Cond*Income, data=x1pi, na.action=na.omit)
+x_s2_cr_p_inc <- lm(scale(credibility_1)   ~ Prior*Cond*Income, data=x2pi, na.action=na.omit)
+tab_model(x_s1_sh_p_inc, x_s1_ag_p_inc, x_s2_cr_p_inc,
+  pred.labels=lbl_inc, dv.labels=dv_exp, show.ci=FALSE, show.se=TRUE, show.p=TRUE,
+  digits=2, show.re.var=FALSE, show.icc=FALSE, show.ngroups=FALSE,
+  title="Table S12: Experience — Policy Support Prior \u00d7 Income")
+cat('<p style="font-size:10px;font-style:italic;">OLS regression. Same outcomes as Table S7. Prior belief = support for redistributive policy. Household income as moderator (scaled; 1 = &lt;$25k to 6 = $150k+).</p>')
+```
+
+
+## Tables: Belief Updating — Study 1
+
+```{r belief change S1, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+
+prediction_df <- prediction_df %>%
+  mutate(
+    update_subj = inequality_subj_2 - inequality_subj_1,
+    update_pol  = inequality_pol_2  - inequality_pol_1,
+    update_luck = inequality_luck_2_1 - inequality_luck_1_1,
+    update_obj  = ineq_accuracy_post  - ineq_accuracy)
+
+lbl_b_base  <- c("Intercept","Prior belief","Headline condition","Prior belief \u00d7 Headline condition")
+lbl_b_dem   <- c("Intercept","Headline condition","Partisanship","Headline condition \u00d7 Partisanship")
+lbl_b_inc   <- c("Intercept","Headline condition","Income","Headline condition \u00d7 Income")
+dv_bel1 <- c("Subj. Inequality","Policy Support","Success Attribution","Wealth Distribution")
+
+# Note: DVs are pre-to-post change scores.
+#   Subj. Inequality  = change in perceived extent of inequality (subjective)
+#   Policy Support    = change in support for redistributive policy
+#   Success Attribution = change in belief that success is due to luck vs. merit
+#   Wealth Distribution = change in accuracy of perceived wealth distribution
+
+# helper: each DV uses its own prior column; unify to Prior / Cond
+mk_b1 <- function(prior_col) {
+  prediction_df %>%
+    mutate(Prior = as.numeric(scale(.data[[prior_col]])),
+           Cond  = ifelse(condition == "original", 0, 1))
+}
+b1_df_subj <- mk_b1("inequality_subj_1")
+b1_df_pol  <- mk_b1("inequality_pol_1")
+b1_df_luck <- mk_b1("inequality_luck_1_1")
+b1_df_obj  <- mk_b1("ineq_accuracy")
+
+# Table S13: Base — prior belief + headline condition
+b1_subj <- lm(update_subj ~ Prior*Cond, data=b1_df_subj, na.action=na.omit)
+b1_pol  <- lm(update_pol  ~ Prior*Cond, data=b1_df_pol,  na.action=na.omit)
+b1_luck <- lm(update_luck ~ Prior*Cond, data=b1_df_luck, na.action=na.omit)
+b1_obj  <- lm(update_obj  ~ Prior*Cond, data=b1_df_obj,  na.action=na.omit)
+tab_model(b1_subj, b1_pol, b1_luck, b1_obj,
+  pred.labels=lbl_b_base, dv.labels=dv_bel1,
+  show.ci=FALSE, show.se=TRUE, show.p=TRUE, digits=2,
+  title="Table S13: Belief Change Study 1 \u2014 Base Model")
+cat('<p style="font-size:10px;font-style:italic;">OLS regression. Predictors: prior belief (scaled; each column uses the same-domain prior as the outcome) and headline condition (1 = factual/original, 0 = modified). Prior beliefs: Subj. Inequality = subjective perception of inequality; Policy Support = support for redistributive policy; Success Attribution = luck-over-merit attribution; Wealth Distribution = accuracy of pre-existing wealth-share beliefs.</p>')
+
+# Table S14: Partisanship moderator — headline condition only (no prior)
+b1_df_subj_d <- b1_df_subj %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+b1_df_pol_d  <- b1_df_pol  %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+b1_df_luck_d <- b1_df_luck %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+b1_df_obj_d  <- b1_df_obj  %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+b1_subj_dem <- lm(update_subj ~ Cond*Partisanship, data=b1_df_subj_d, na.action=na.omit)
+b1_pol_dem  <- lm(update_pol  ~ Cond*Partisanship, data=b1_df_pol_d,  na.action=na.omit)
+b1_luck_dem <- lm(update_luck ~ Cond*Partisanship, data=b1_df_luck_d, na.action=na.omit)
+b1_obj_dem  <- lm(update_obj  ~ Cond*Partisanship, data=b1_df_obj_d,  na.action=na.omit)
+tab_model(b1_subj_dem, b1_pol_dem, b1_luck_dem, b1_obj_dem,
+  pred.labels=lbl_b_dem, dv.labels=dv_bel1,
+  show.ci=FALSE, show.se=TRUE, show.p=TRUE, digits=2,
+  title="Table S14: Belief Change Study 1 \u2014 Partisanship Moderation")
+cat('<p style="font-size:10px;font-style:italic;">OLS regression. Predictors: headline condition and partisanship (scaled; negative = Democratic, positive = Republican).</p>')
+
+# Table S15: Income moderator — headline condition only (no prior)
+b1_df_subj_i <- b1_df_subj %>% mutate(Income = as.numeric(scale(income_num)))
+b1_df_pol_i  <- b1_df_pol  %>% mutate(Income = as.numeric(scale(income_num)))
+b1_df_luck_i <- b1_df_luck %>% mutate(Income = as.numeric(scale(income_num)))
+b1_df_obj_i  <- b1_df_obj  %>% mutate(Income = as.numeric(scale(income_num)))
+b1_subj_inc <- lm(update_subj ~ Cond*Income, data=b1_df_subj_i, na.action=na.omit)
+b1_pol_inc  <- lm(update_pol  ~ Cond*Income, data=b1_df_pol_i,  na.action=na.omit)
+b1_luck_inc <- lm(update_luck ~ Cond*Income, data=b1_df_luck_i, na.action=na.omit)
+b1_obj_inc  <- lm(update_obj  ~ Cond*Income, data=b1_df_obj_i,  na.action=na.omit)
+tab_model(b1_subj_inc, b1_pol_inc, b1_luck_inc, b1_obj_inc,
+  pred.labels=lbl_b_inc, dv.labels=dv_bel1,
+  show.ci=FALSE, show.se=TRUE, show.p=TRUE, digits=2,
+  title="Table S15: Belief Change Study 1 \u2014 Income Moderation")
+cat('<p style="font-size:10px;font-style:italic;">OLS regression. Predictors: headline condition and household income (scaled; 1 = &lt;$25k to 6 = $150k+).</p>')
+```
+
+
+
+## Tables: Belief Updating — Study 2
+
+```{r belief updating S2, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+# data_belief already prepared in management block
+
+
+lbl_s2_base <- c(
+  "(Intercept)"       = "Intercept",
+  "Prior"             = "Prior belief",
+  "Cond"              = "Headline condition",
+  "Source"            = "Article condition",
+  "Prior:Cond"        = "Prior belief \u00d7 Headline condition",
+  "Prior:Source"      = "Prior belief \u00d7 Article condition",
+  "Cond:Source"       = "Headline condition \u00d7 Article condition",
+  "Prior:Cond:Source" = "Prior belief \u00d7 Headline condition \u00d7 Article condition")
+dv_bel2 <- c("Subj. Inequality","Policy Support","Success Attribution")
+
+lbl_s2_het_dem <- c(
+  "(Intercept)"              = "Intercept",
+  "Cond"                     = "Headline condition",
+  "Source"                   = "Article condition",
+  "Partisanship"             = "Partisanship",
+  "Cond:Source"              = "Headline condition \u00d7 Article condition",
+  "Cond:Partisanship"        = "Headline condition \u00d7 Partisanship",
+  "Source:Partisanship"      = "Article condition \u00d7 Partisanship",
+  "Cond:Source:Partisanship" = "Headline condition \u00d7 Article condition \u00d7 Partisanship")
+lbl_s2_het_inc <- c(
+  "(Intercept)"        = "Intercept",
+  "Cond"               = "Headline condition",
+  "Source"             = "Article condition",
+  "Income"             = "Income",
+  "Cond:Source"        = "Headline condition \u00d7 Article condition",
+  "Cond:Income"        = "Headline condition \u00d7 Income",
+  "Source:Income"      = "Article condition \u00d7 Income",
+  "Cond:Source:Income" = "Headline condition \u00d7 Article condition \u00d7 Income")
+
+# helper: unify column names Prior / Cond / Source
+mk_b2 <- function(prior_col) {
+  data_belief %>%
+    mutate(Prior  = as.numeric(scale(.data[[prior_col]])),
+           Cond   = ifelse(condition == "personal", 1, 0),
+           Source = selectedTitleSourceStat)
+}
+b2_df_subj <- mk_b2("inequality_subjective_1")
+b2_df_pol  <- mk_b2("inequality_politics_1")
+b2_df_luck <- mk_b2("inequality_luck_1")
+
+# Table S16: Base — prior belief + headline condition + article condition
+b2_subj <- lm(belief_update_subjective ~ Prior*Cond*Source, data=b2_df_subj, na.action=na.omit)
+b2_pol  <- lm(belief_update_politics   ~ Prior*Cond*Source, data=b2_df_pol,  na.action=na.omit)
+b2_luck <- lm(belief_update_luck       ~ Prior*Cond*Source, data=b2_df_luck, na.action=na.omit)
+tab_model(b2_subj, b2_pol, b2_luck,
+  pred.labels=lbl_s2_base, dv.labels=dv_bel2,
+  show.ci=FALSE, show.se=TRUE, show.p=TRUE, digits=2,
+  title="Table S16: Belief Change Study 2 \u2014 Base Model")
+cat('<p style="font-size:10px;font-style:italic;">OLS regression. Outcomes are pre-to-post belief change scores. Headline condition: 1 = personalised, 0 = control. Article condition (Source): 0.5 = article shown, -0.5 = not shown. Prior belief: same-domain pre-measure, scaled. DVs: Subj. Inequality = subjective perception of inequality; Policy Support = support for redistributive policy; Success Attribution = luck-over-merit attribution.</p>')
+
+# Table S17: Partisanship moderator — headline and article condition only (no prior)
+b2_df_subj_d <- b2_df_subj %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+b2_df_pol_d  <- b2_df_pol  %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+b2_df_luck_d <- b2_df_luck %>% mutate(Partisanship = as.numeric(scale(DemRep_C_num)))
+b2_subj_dem <- lm(belief_update_subjective ~ Cond*Source*Partisanship, data=b2_df_subj_d, na.action=na.omit)
+b2_pol_dem  <- lm(belief_update_politics   ~ Cond*Source*Partisanship, data=b2_df_pol_d,  na.action=na.omit)
+b2_luck_dem <- lm(belief_update_luck       ~ Cond*Source*Partisanship, data=b2_df_luck_d, na.action=na.omit)
+tab_model(b2_subj_dem, b2_pol_dem, b2_luck_dem,
+  pred.labels=lbl_s2_het_dem, dv.labels=dv_bel2,
+  show.ci=FALSE, show.se=TRUE, show.p=TRUE, digits=2,
+  title="Table S17: Belief Change Study 2 \u2014 Partisanship Moderation")
+cat('<p style="font-size:10px;font-style:italic;">OLS regression. Predictors: headline condition, article condition, and partisanship (scaled; negative = Democratic, positive = Republican). Prior belief excluded from this model.</p>')
+
+# Table S18: Income moderator — headline and article condition only (no prior)
+b2_df_subj_i <- b2_df_subj %>% mutate(Income = as.numeric(scale(income_num)))
+b2_df_pol_i  <- b2_df_pol  %>% mutate(Income = as.numeric(scale(income_num)))
+b2_df_luck_i <- b2_df_luck %>% mutate(Income = as.numeric(scale(income_num)))
+b2_subj_inc <- lm(belief_update_subjective ~ Cond*Source*Income, data=b2_df_subj_i, na.action=na.omit)
+b2_pol_inc  <- lm(belief_update_politics   ~ Cond*Source*Income, data=b2_df_pol_i,  na.action=na.omit)
+b2_luck_inc <- lm(belief_update_luck       ~ Cond*Source*Income, data=b2_df_luck_i, na.action=na.omit)
+tab_model(b2_subj_inc, b2_pol_inc, b2_luck_inc,
+  pred.labels=lbl_s2_het_inc, dv.labels=dv_bel2,
+  show.ci=FALSE, show.se=TRUE, show.p=TRUE, digits=2,
+  title="Table S18: Belief Change Study 2 \u2014 Income Moderation")
+cat('<p style="font-size:10px;font-style:italic;">OLS regression. Predictors: headline condition, article condition, and household income (scaled; 1 = &lt;$25k to 6 = $150k+). Prior belief excluded from this model.</p>')
+```
+
+## Tables: Belief Updating — Study 2 (Policy-Specific Measures)
+
+```{r belief updating S2 policy specific, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+# Helper: unified column names for these models
+mk_b2_sp <- function(prior_col, update_col) {
+  data_belief %>% mutate(
+    Prior  = as.numeric(scale(.data[[prior_col]])),
+    Cond   = ifelse(condition == "personal", 1, 0),
+    Source = selectedTitleSourceStat,
+    Update = .data[[update_col]]
+  )
+}
+
+df_prog <- mk_b2_sp("inequality_pol_sp1_1_c", "belief_update_pol_sp1")
+df_hous <- mk_b2_sp("inequality_pol_sp1_2_c", "belief_update_pol_sp2")
+
+m_prog <- lm(Update ~ Prior * Cond * Source, data = df_prog, na.action = na.omit)
+m_hous <- lm(Update ~ Prior * Cond * Source, data = df_hous, na.action = na.omit)
+
+lbl_sp_base <- c(
+  "(Intercept)"       = "Intercept",
+  "Prior"             = "Prior belief",
+  "Cond"              = "Headline condition",
+  "Source"            = "Article condition",
+  "Prior:Cond"        = "Prior belief \u00d7 Headline condition",
+  "Prior:Source"      = "Prior belief \u00d7 Article condition",
+  "Cond:Source"       = "Headline condition \u00d7 Article condition",
+  "Prior:Cond:Source" = "Prior belief \u00d7 Headline condition \u00d7 Article condition")
+
+tab_model(m_prog, m_hous,
+  pred.labels = lbl_sp_base,
+  dv.labels   = c("Progressive Tax", "Affordable Housing"),
+  show.ci = FALSE, show.se = TRUE, show.p = TRUE, digits = 2,
+  title = "Table S19: Belief Change Study 2 \u2014 Policy-Specific Measures")
+cat('<p style="font-size:10px;font-style:italic;">OLS regression. DVs are pre-to-post belief change on two topic-specific policy items (Study 2). <em>Progressive Tax</em>: change in support for progressive taxation/redistribution policy, restricted to participants whose selected article was rated as covering this topic. <em>Affordable Housing</em>: change in support for affordable housing policy, restricted to articles covering this topic. Prior belief: pre-measure on the same item (scaled). Headline condition: 1 = AI-reframed, 0 = control. Article condition (Source): 0.5 = article shown, &minus;0.5 = not shown.</p>')
+```
+
+# Stimulus Materials
+
+## Study 1 Headlines
+
+```{r headlines_s1, echo=FALSE, warning=FALSE, message=FALSE}
+library(jsonlite)
+library(kableExtra)
+
+s1_json <- fromJSON("modified_titles_factchecked_experiment.json")
+s1_tbl <- data.frame(
+  `Original headline` = s1_json$original,
+  `AI-reframed`       = s1_json$flipped,
+  check.names = FALSE
+)
+
+kable(s1_tbl, format = "html", escape = TRUE,
+      caption = "Study 1 headlines: original and AI-reframed versions.") %>%
+  kable_styling(full_width = TRUE, font_size = 11) %>%
+  column_spec(1, width = "50%") %>%
+  column_spec(2, width = "50%")
+```
+
+## Study 2 Headlines
+
+```{r headlines_s2, echo=FALSE, warning=FALSE, message=FALSE}
+s2_json <- fromJSON("cleaned_articles_with_headlines.json")
+s2_tbl <- data.frame(
+  `Original headline` = s2_json$title,
+  `AI-reframed`       = s2_json$selected_title,
+  `URL`               = s2_json$url,
+  check.names = FALSE
+)
+
+kable(s2_tbl, format = "html", escape = TRUE,
+      caption = "Study 2 headlines: original news article title, AI-reframed headline, and source URL.") %>%
+  kable_styling(full_width = TRUE, font_size = 11) %>%
+  column_spec(1, width = "35%") %>%
+  column_spec(2, width = "35%") %>%
+  column_spec(3, width = "30%")
+```
+
+# Survey Questions
+
+## Study 1
+
+
+---
+
+### Demographics and Political Orientation (Study 1)
+
+
+---
+
+**Education** (`Educational Level`)
+*What is the highest level of school you have completed or the highest degree you have received?*
+
+1. Less than high school degree
+2. High school graduate (high school diploma or equivalent including GED)
+3. Some college but no degree
+4. Associate degree in college (2-year)
+5. Bachelor's degree in college (4-year)
+6. Master's degree
+7. Doctoral degree
+8. Professional degree (JD, MD)
+
+---
+
+**Household income** (`income`)
+*What was your total household income before taxes during the past 12 months?*
+
+1. Less than \$25,000
+2. \$25,000–\$49,999
+3. \$50,000–\$74,999
+4. \$75,000–\$99,999
+5. \$100,000–\$149,999
+6. \$150,000 or more
+7. Prefer not to say
+
+---
+
+**Gender** (`gender`) *(Study 1 only)*
+*How do you describe yourself?*
+
+1. Male
+2. Female
+3. Non-binary / third gender
+4. Prefer to self-describe *(open text)*
+5. Prefer not to say
+
+---
+
+**Household size** (`Household`)
+*How many people live or stay in this household at least half the time?*
+*Open numeric entry.*
+
+---
+
+**Party identification** (`DemRep_C`)
+*Which of the following best describes your political preference?*
+
+1. Strongly Democratic
+2. Democratic
+3. Lean Democratic
+4. Lean Republican
+5. Republican
+6. Strongly Republican
+
+---
+
+**Economic ideology** (`Ideology_econ`)
+*In general, how would you describe your own political viewpoint on economic issues?*
+
+1. Very liberal
+2. Liberal
+3. Moderate
+4. Conservative
+5. Very conservative
+6. Not sure
+
+---
+
+**Social ideology** (`Ideology_social`)
+*In general, how would you describe your own political viewpoint on social issues?*
+
+1. Very liberal
+2. Liberal
+3. Moderate
+4. Conservative
+5. Very conservative
+6. Not sure
+
+---
+
+**Attention check** (`AttentionCheck2`)
+*People are very busy these days and many do not have time to follow current events. We are testing the extent to which people read instructions. To show that you have read this much, please answer both "Not at all interested" and "Extremely interested."*
+
+1. Not at all interested
+2. Slightly interested
+3. Moderately interested
+4. Very interested
+5. Extremely interested
+
+---
+
+### Prior Belief Measures (Study 1)
+
+**Objective wealth distribution** (`inequality_obj_1`) *(Study 1 only)*
+*How do you think total wealth is distributed across the population? Allocate the percentage of total wealth owned by each group. Your total must add to 100%.*
+
+Four groups: Top 25%, Upper-middle 25%, Lower-middle 25%, Bottom 25%.
+*(Stored as `top25pre`, `upper25pre`, `lower25pre`, `bottom25pre`.)*
+
+---
+
+**Subjective inequality perception** (`inequality_subj_1`)
+*On a scale from 1 (completely disagree) to 7 (completely agree), how much would you agree with the following statement:*
+
+> Differences in wealth in the United States are too large.
+
+*Scale: 1 = Completely disagree — 7 = Completely agree*
+
+---
+
+**Policy support** (`inequality_pol_1`)
+
+> The United States government should take measures to reduce differences in wealth levels.
+
+*Scale: 1 = Completely disagree — 7 = Completely agree*
+
+---
+
+**Attribution of inequality** (`inequality_luck_1`)
+*To get ahead financially, how much do luck vs. hard work and personal abilities matter?*
+
+*Scale: 1 = Luck matters exclusively — 4 = Both matter equally — 7 = Abilities/hard work matter exclusively*
+
+---
+
+### Headline Rating Task (Study 1)
+
+Participants were shown 20 news headlines sequentially. For each headline they rated:
+
+- **Click likelihood** (`click_rating`): "How willing would you be to click on this article?" *(1–5)*
+- **Share likelihood** (`share_rating`): "How willing would you be to share it on social media?" *(1–5)*
+- **Anticipated agreement** (`agreement_rating`): "How much do you think you would agree with the article?" *(1–5)*
+
+Participants were also asked to predict what percentage of other participants would share and agree with the article. One headline was randomly selected for the participant to read in full.
+
+
+---
+
+### Posterior Belief Measures (Study 1)
+
+All three prior belief questions were re-administered after article reading, plus the objective wealth distribution task.
+
+**Objective wealth distribution — posterior** (`inequality_obj_2`) *(Study 1 only)*
+Same task as `inequality_obj_1`. *(Stored as `top25post`, `upper25post`, `lower25post`, `bottom25post`.)*
+
+**Subjective inequality perception — posterior** (`inequality_subj_2`)
+Same item as pre-exposure. *Scale: 1–7.*
+
+**Policy support — posterior** (`inequality_pol_2`)
+Same item as pre-exposure. *Scale: 1–7.*
+
+**Attribution of inequality — posterior** (`inequality_luck_2`)
+Same item as pre-exposure. *Scale: 1–7.*
+
+---
+
+## Study 2
+
+The following sections reproduce all questions administered in Study 2, in survey order.
+
+---
+
+## Demographics and Political Orientation
+
+**Prolific ID**
+*Open text entry.*
+
+---
+
+**Economic ideology** (`Ideology_econ`)
+*In general, how would you describe your own political viewpoint on economic issues?*
+
+1. Very liberal
+2. Liberal
+3. Moderate
+4. Conservative
+5. Very conservative
+6. Not sure
+
+---
+
+**Social ideology** (`Ideology_social`)
+*In general, how would you describe your own political viewpoint on social issues?*
+
+1. Very liberal
+2. Liberal
+3. Moderate
+4. Conservative
+5. Very conservative
+6. Not sure
+
+---
+
+**Party identification** (`DemRep_C`)
+*Which of the following best describes your political preference?*
+
+1. Strongly Democratic
+2. Democratic
+3. Lean Democratic
+4. Lean Republican
+5. Republican
+6. Strongly Republican
+
+---
+
+**Education** (`Educational Level`)
+*What is the highest level of school you have completed or the highest degree you have received?*
+
+1. Less than high school degree
+2. High school graduate (high school diploma or equivalent including GED)
+3. Some college but no degree
+4. Associate degree in college (2-year)
+5. Bachelor's degree in college (4-year)
+6. Master's degree
+7. Doctoral degree
+8. Professional degree (JD, MD)
+
+---
+
+**Attention check** (`AttentionCheck2`)
+*People are very busy these days and many do not have time to follow current events. We are testing the extent to which people read instructions. To show that you have read this much, please answer both "Not at all interested" and "Extremely interested."*
+
+1. Not at all interested
+2. Slightly interested
+3. Moderately interested
+4. Very interested
+5. Extremely interested
+
+---
+
+**Household income** (`income`)
+*What was your total household income before taxes during the past 12 months?*
+
+1. Less than \$25,000
+2. \$25,000–\$49,999
+3. \$50,000–\$74,999
+4. \$75,000–\$99,999
+5. \$100,000–\$149,999
+6. \$150,000 or more
+7. Prefer not to say
+
+---
+
+**Household size** (`Household`)
+*How many people live or stay in this household at least half the time?*
+*Open numeric entry.*
+
+---
+
+## Prior Belief Measures
+
+**Subjective inequality perception** (`inequality_subj_1`)
+*On a scale from 1 (completely disagree) to 7 (completely agree), how much would you agree with the following statement:*
+
+> Differences in wealth in the United States are too large.
+
+*Scale: 1 = Completely disagree — 7 = Completely agree*
+
+---
+
+**Policy support** (`inequality_pol_1`)
+*On a scale from 1 (completely disagree) to 7 (completely agree), how much would you agree with the following statement:*
+
+> The United States government should take measures to reduce differences in wealth levels.
+
+*Scale: 1 = Completely disagree — 7 = Completely agree*
+
+---
+
+**Attribution of inequality** (`inequality_luck_1`)
+*To get ahead financially, how much do luck vs. hard work and personal abilities matter?*
+
+*Scale: 1 = Luck matters exclusively — 4 = Both matter equally — 7 = Abilities/hard work matter exclusively*
+
+---
+
+**Policy-specific support** (`inequality_pol_sp1`)
+*Out of the following (broad) proposals to address inequality and alleviate poverty, how much do you support the following:*
+
+*Scale: 1 = Absolutely NO support — 7 = Completely support*
+
+- Progressive taxation (i.e., taxation increases with wealth)
+- Affordable housing initiatives (i.e., rent control or state-owned housing for the poor)
+
+---
+
+---
+
+## Posterior Belief Measures
+
+All four prior belief questions were re-administered after article reading. Participants were shown their original response and asked to provide a new response.
+
+---
+
+**Subjective inequality perception — posterior** (`inequality_subj_2`)
+*Now that you read a newspaper article, we are interested in your opinion on the following question.*
+
+> Differences in wealth in the United States are too large.
+
+*Your first response was: [shown]. What is your new response?*
+*Scale: 1 = Completely disagree — 7 = Completely agree*
+
+---
+
+**Policy support — posterior** (`inequality_pol_2`)
+
+> The United States government should take measures to reduce differences in wealth levels.
+
+*Your first response was: [shown]. What is your new response?*
+*Scale: 1 = Completely disagree — 7 = Completely agree*
+
+---
+
+**Attribution of inequality — posterior** (`inequality_luck_2`)
+*To get ahead financially, how much do luck vs. hard work and personal abilities matter?*
+
+*Your first response was: [shown]. What is your new response?*
+*Scale: 1 = Luck matters exclusively — 4 = Both matter equally — 7 = Abilities/hard work matter exclusively*
+
+---
+
+**Policy-specific support — posterior** (`inequality_pol_sp2`)
+*Out of the following (broad) proposals to address inequality and alleviate poverty, how much do you support the following:*
+
+*Scale: 1 = Absolutely NO support — 7 = Completely support*
+
+- Progressive taxation (i.e., taxation increases with wealth)
+- Affordable housing initiatives (i.e., rent control or state-owned housing for the poor)
