@@ -1,8 +1,7 @@
 # Inequality Headlines — Public Release
 
-This folder contains the processed data, stimuli, and analysis code for two studies examining how AI-reframed news headlines about economic inequality affect reader engagement and belief updating. No raw Qualtrics files are required to reproduce the analyses; all identifiable fields have been removed from the processed CSVs.
+This folder contains the processed data, stimuli, and analysis code for two studies examining how AI-reframed news headlines about economic inequality affect reader engagement and belief updating.
 
-**Preregistration:** TSB_RP1173 (Tilburg University ERB)
 
 ---
 
@@ -261,10 +260,3 @@ Array of objects with fields:
 Same structure as above; articles on non-inequality topics shown to all participants alongside the focal headlines.
 
 ---
-
-## Notes
-
-- The processed CSV files have had the following Qualtrics-generated fields removed: `IPAddress`, `LocationLatitude`, `LocationLongitude`, `RecipientFirstName`, `RecipientLastName`, `RecipientEmail`, `ExternalDataReference`, `RecordedDate`.
-- `StartDate` and `EndDate` were retained in the raw files but are not included in the processed files.
-- Study 1 Prolific ID column is named `porlific` (typo preserved from original Qualtrics instrument); renamed to `ProlificID` in processed files.
-- The `supplementary_information.Rmd` in this folder reads from the processed CSVs and local JSON files — no raw Qualtrics data is needed to knit it.
