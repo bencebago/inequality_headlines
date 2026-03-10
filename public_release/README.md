@@ -1,4 +1,4 @@
-# Inequality Headlines — Public Release
+# Inequality Headlines — Data explanation
 
 This folder contains the processed data, stimuli, and analysis code for two studies examining how AI-reframed news headlines about economic inequality affect reader engagement and belief updating.
 
